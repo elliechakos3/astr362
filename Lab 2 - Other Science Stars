@@ -1,0 +1,1003 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Nov  2 23:54:01 2026
+
+@author: EChak
+"""
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+import astropy
+from astropy.io import fits
+from pathlib import Path
+import glob
+from astropy.modeling import models, fitting
+
+
+#Part 1: Bias Images
+
+# Folder
+bias_dir = Path(r"C:\ASTR362_Files\biasimages")
+
+print("Folder exists:", bias_dir.exists())
+print("Folder:", bias_dir)
+bias_files = sorted(
+    path for path in bias_dir.iterdir()
+    if path.is_file() and path.suffix.lower() in {".fit", ".fits"})
+
+print("Bias files found:", len(bias_files))
+print("First few files:", bias_files[:5])
+
+if not bias_files:
+    raise FileNotFoundError("No .fit or .fits files found. Check the folder path and file extensions.")
+
+bias_images = []
+
+for path in bias_files:
+    raw = fits.getdata(path)
+    image = raw / 16 + 1
+    bias_images.append(image)
+
+images = np.stack(bias_images)
+print("Bias stack shape:", images.shape)
+
+# Average
+avg_bias = np.mean(images, axis=0)
+print("Average bias shape:", avg_bias.shape)
+
+# Median
+median_bias = np.median(avg_bias)
+print("Median bias value:", median_bias, "ADU")
+
+# Plot
+plt.figure(figsize=(8, 8))
+plt.imshow(avg_bias, cmap="gray", origin="lower")
+plt.colorbar(label="ADU")
+plt.title("Mean Bias Image")
+plt.xlabel("Pixel x")
+plt.ylabel("Pixel y")
+plt.show()
+
+# Part 2: Dark Images
+
+def load_dark_stack(folder):
+    """Load and convert all .fit/.fits images in a folder."""
+    folder = Path(folder)
+
+    if not folder.exists():
+        raise FileNotFoundError(f"Folder does not exist: {folder}")
+
+    dark_files = sorted(
+        path for path in folder.iterdir()
+        if path.is_file() and path.suffix.lower() in {".fit", ".fits"}
+    )
+
+    print(f"\nFolder: {folder}")
+    print(f"Dark files found: {len(dark_files)}")
+    print("First few files:", dark_files[:5])
+
+    if not dark_files:
+        raise FileNotFoundError(f"No .fit or .fits files found in {folder}")
+
+    dark_images = []
+
+    for path in dark_files:
+        raw = fits.getdata(path)
+        image = raw / 16 + 1
+        dark_images.append(image)
+
+    dark_stack = np.stack(dark_images)
+    print("Dark stack shape:", dark_stack.shape)
+
+    return dark_stack
+
+images30 = load_dark_stack(r"C:\ASTR362_Files\30sec_darks_lab2")
+images20 = load_dark_stack(r"C:\ASTR362_Files\20sec_darks_lab2")
+images10 = load_dark_stack(r"C:\ASTR362_Files\10sec_darks_lab2")
+images5 = load_dark_stack(r"C:\ASTR362_Files\5sec_darks_lab2")
+
+avg30_dark = np.mean(images30, axis=0)
+avg20_dark = np.mean(images20, axis=0)
+avg10_dark = np.mean(images10, axis=0)
+avg5_dark = np.mean(images5, axis=0)
+
+print("Average 30-second dark shape:", avg30_dark.shape)
+print("Average 20-second dark shape:", avg20_dark.shape)
+print("Average 10-second dark shape:", avg10_dark.shape)
+print("Average 5-second dark shape:", avg5_dark.shape)
+
+dark30_bias_corrected = avg30_dark - avg_bias
+dark20_bias_corrected = avg20_dark - avg_bias
+dark10_bias_corrected = avg10_dark - avg_bias
+dark5_bias_corrected = avg5_dark - avg_bias
+
+plt.figure(figsize=(8, 8))
+plt.imshow(dark30_bias_corrected, cmap="gray", origin="lower")
+plt.colorbar(label="ADU")
+plt.title("Average 30-Second Dark, Bias Corrected")
+plt.xlabel("Pixel x")
+plt.ylabel("Pixel y")
+plt.show()
+
+plt.figure(figsize=(8, 8))
+plt.imshow(dark20_bias_corrected, cmap="gray", origin="lower")
+plt.colorbar(label="ADU")
+plt.title("Average 20-Second Dark, Bias Corrected")
+plt.xlabel("Pixel x")
+plt.ylabel("Pixel y")
+plt.show()
+
+plt.figure(figsize=(8, 8))
+plt.imshow(dark10_bias_corrected, cmap="gray", origin="lower")
+plt.colorbar(label="ADU")
+plt.title("Average 10-Second Dark, Bias Corrected")
+plt.xlabel("Pixel x")
+plt.ylabel("Pixel y")
+plt.show()
+
+plt.figure(figsize=(8, 8))
+plt.imshow(dark5_bias_corrected, cmap="gray", origin="lower")
+plt.colorbar(label="ADU")
+plt.title("Average 5-Second Dark, Bias Corrected")
+plt.xlabel("Pixel x")
+plt.ylabel("Pixel y")
+plt.show()
+
+np.save("dark_30s_bias_corrected.npy", dark30_bias_corrected)
+np.save("dark_20s_bias_corrected.npy", dark20_bias_corrected)
+np.save("dark_10s_bias_corrected.npy", dark10_bias_corrected)
+np.save("dark_5s_bias_corrected.npy", dark5_bias_corrected)
+
+# Part 3: Twilight Flats
+
+flat_dir = Path(r"C:\ASTR362_Files\twilightflats_lab2")
+
+
+if not flat_dir.exists():
+    raise FileNotFoundError(f"Twilight flats folder does not exist: {flat_dir}")
+    
+flat_files = sorted(
+    path for path in flat_dir.iterdir()
+    if path.is_file() and path.suffix.lower() in {".fit", ".fits"})
+
+print("Twilight flats folder:", flat_dir)
+print("Number of flat files found:", len(flat_files))
+print("Files:", flat_files)
+
+if not flat_files:
+    raise FileNotFoundError("No .fit or .fits files found in the sample folder.")
+
+if "avg_bias" not in globals():
+    raise NameError("Run the bias-image section first so avg_bias is defined.")
+
+flat_hdus = [
+    fits.open(path, memmap=True, do_not_scale_image_data=True)
+    for path in flat_files]
+
+try:
+    number_of_flats = len(flat_hdus)
+    image_height, image_width = avg_bias.shape
+    bias_float = avg_bias.astype(np.float32)
+
+    flat_medians = []
+
+    for path, hdul in zip(flat_files, flat_hdus):
+        header = hdul[0].header
+        bscale = header.get("BSCALE", 1.0)
+        bzero = header.get("BZERO", 0.0)
+
+        raw = hdul[0].data
+
+        if raw.shape != avg_bias.shape:
+            raise ValueError(
+                f"Image shape mismatch for {path}: "
+                f"{raw.shape} versus bias shape {avg_bias.shape}")
+
+        corrected = (
+            raw.astype(np.float32) * bscale + bzero
+        ) / 16.0 + 1.0 - bias_float
+
+        flat_median = np.median(corrected)
+
+        if flat_median == 0:
+            raise ValueError(f"Bias-corrected median is zero for {path}")
+
+        flat_medians.append(flat_median)
+        del corrected
+
+    print("Image shape:", avg_bias.shape)
+    print("Flat medians:", flat_medians)
+
+    median_normalized_flat = np.empty(
+        (image_height, image_width),
+        dtype=np.float32)
+
+    rows_per_strip = 16
+
+    for y0 in range(0, image_height, rows_per_strip):
+        y1 = min(y0 + rows_per_strip, image_height)
+        bias_strip = bias_float[y0:y1, :]
+
+        normalized_strip_stack = np.empty(
+            (number_of_flats, y1 - y0, image_width),
+            dtype=np.float32)
+
+        for i, hdul in enumerate(flat_hdus):
+            header = hdul[0].header
+            bscale = header.get("BSCALE", 1.0)
+            bzero = header.get("BZERO", 0.0)
+
+            raw_strip = hdul[0].data[y0:y1, :]
+
+            corrected_strip = (raw_strip.astype(np.float32) * bscale + bzero) / 16.0 + 1.0 - bias_strip
+
+            normalized_strip_stack[i] = corrected_strip / flat_medians[i]
+
+        median_normalized_flat[y0:y1, :] = np.median(
+            normalized_strip_stack,
+            axis=0)
+
+        print(f"Processed rows {y0} to {y1 - 1}")
+        del normalized_strip_stack
+
+finally:
+    for hdul in flat_hdus:
+        hdul.close()
+
+
+print("Median normalized flat shape:", median_normalized_flat.shape)
+y0, x0 = 1000, 1000
+size = 200
+flat_region = median_normalized_flat[y0:y0 + size, x0:x0 + size]
+
+plt.figure(figsize=(8, 8))
+plt.imshow(flat_region, cmap="gray", origin="lower")
+plt.colorbar(label="Normalized value")
+plt.title("Small Region of Median Normalized Flat")
+plt.xlabel("Pixel x within region")
+plt.ylabel("Pixel y within region")
+plt.show()
+
+np.save("median_normalized_flat_sample.npy", median_normalized_flat)
+
+#Part 4: Random Error
+
+bias_a = fits.getdata(bias_files[0]) / 16 + 1
+bias_b = fits.getdata(bias_files[1]) / 16 + 1
+bias_difference = bias_a - bias_b
+
+print("Mean Difference:", np.mean(bias_difference))
+plt.hist(bias_difference.ravel(), bins=100)
+plt.xlabel("Difference (ADU)")
+plt.ylabel("Number of Pixels")
+plt.title("Difference of Two Bias Images")
+plt.show()
+
+sigma_diff = np.std(bias_difference)
+print("Difference Image STD:", sigma_diff, "ADU")
+
+read_noise = sigma_diff / np.sqrt(2)
+print("Read Noise:", read_noise, "ADU")
+
+#Part 5: CCD Gain
+x0 = 3000
+y0 = 2000
+region_size = 100
+
+x1 = x0 + region_size
+y1 = y0 + region_size
+
+if y1 > avg_bias.shape[0] or x1 > avg_bias.shape[1]:
+    raise ValueError("The selected region is outside the image.")
+
+
+def get_flat_region(filename, avg_bias):
+    """
+    Load a twilight flat, convert it to ADU,
+    subtract the average bias, and return a
+    small region of the image.
+    """
+
+    with fits.open(
+        filename,
+        memmap=True,
+        do_not_scale_image_data=True
+    ) as hdul:
+
+        header = hdul[0].header
+        raw = hdul[0].data[y0:y1, x0:x1].astype(np.float32)
+
+        bscale = header.get("BSCALE", 1.0)
+        bzero = header.get("BZERO", 0.0)
+
+        flat_adu = (
+            raw * bscale + bzero
+        ) / 16.0 + 1.0
+
+    bias_region = avg_bias[y0:y1, x0:x1].astype(np.float32)
+
+    corrected_flat = flat_adu - bias_region
+
+    return corrected_flat
+
+
+
+
+def measure_flat_pair(flat_a_path, flat_b_path, avg_bias):
+    """
+    Measure the average signal and ADU variance
+    from two approximately equally illuminated,
+    bias-corrected twilight flats.
+    """
+
+    flat_a = get_flat_region(flat_a_path, avg_bias)
+    flat_b = get_flat_region(flat_b_path, avg_bias)
+
+    
+    mean_a = np.mean(flat_a)
+    mean_b = np.mean(flat_b)
+
+    scale = mean_a / mean_b
+
+
+    difference = flat_a - scale * flat_b
+  
+    difference_variance = np.var(difference, ddof=1)
+
+    variance = difference_variance / (1 + scale**2)
+
+    signal = (mean_a + scale * mean_b) / 2
+
+    return signal, variance, scale
+
+
+
+if len(flat_files) < 16:
+    raise ValueError("Not enough twilight flats for eight pairs.")
+
+
+pair_starts = np.linspace(
+    0,
+    len(flat_files) - 2,
+    8,
+    dtype=int
+)
+
+signal_levels = []
+variances = []
+
+print("\nCCD Gain Measurements")
+print("---------------------")
+
+for start in pair_starts:
+
+    flat_a_path = flat_files[start]
+    flat_b_path = flat_files[start + 1]
+
+    signal, variance, scale = measure_flat_pair(
+        flat_a_path,
+        flat_b_path,
+        avg_bias
+    )
+
+    signal_levels.append(signal)
+    variances.append(variance)
+
+    print(
+        f"{flat_a_path.name} + {flat_b_path.name}: "
+        f"Signal = {signal:.3f} ADU, "
+        f"Variance = {variance:.5f} ADU^2, "
+        f"Scale = {scale:.5f}"
+    )
+
+
+
+signal_levels = np.array(signal_levels)
+variances = np.array(variances)
+
+
+
+def least_squares(x, y):
+    """
+    Perform a linear least-squares fit.
+
+    Returns the slope, intercept, and their
+    uncertainties.
+    """
+
+    coefficients, covariance = np.polyfit(
+        x,
+        y,
+        1,
+        cov=True
+    )
+
+    slope = coefficients[0]
+    intercept = coefficients[1]
+
+    slope_error = np.sqrt(covariance[0, 0])
+    intercept_error = np.sqrt(covariance[1, 1])
+
+    return slope, intercept, slope_error, intercept_error
+
+
+slope, intercept, slope_error, intercept_error = (
+    least_squares(signal_levels, variances)
+)
+
+
+gain = 1 / slope
+
+
+gain_error = slope_error / slope**2
+
+print("\nLeast-Squares Results")
+print("---------------------")
+
+print(f"Slope: {slope:.8f} +/- {slope_error:.8f}")
+print(f"Intercept: {intercept:.8f} +/- {intercept_error:.8f}")
+
+print("\nInstrumental Gain")
+print("-----------------")
+
+print(f"Gain = {gain:.4f} +/- {gain_error:.4f} electrons/ADU")
+
+
+
+fit_line = slope * signal_levels + intercept
+
+plt.figure(figsize=(8, 6))
+
+plt.scatter(
+    signal_levels,
+    variances,
+    label="Measured flat pairs"
+)
+
+plt.plot(
+    signal_levels,
+    fit_line,
+    label="Least-squares fit"
+)
+
+plt.xlabel("Mean Signal (ADU)")
+plt.ylabel("ADU Variance (ADU²)")
+plt.title("CCD Gain: Variance vs. Signal")
+
+plt.legend()
+plt.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+
+#Part 6: Correcting Science Images
+
+observation_dirs = [
+    Path(r"C:\ASTR362_Files\HD343812_images_Lab2"),
+    Path(r"C:\ASTR362_Files\Bunda_images_Lab2"),
+    Path(r"C:\ASTR362_Files\28Peg_images_Lab2"),
+    Path(r"C:\ASTR362_Files\SA1111416_lab2"),
+    Path(r"C:\ASTR362_Files\HD199280_lab2"),
+]
+
+science_files = sorted(
+    path
+    for folder in observation_dirs
+    for path in folder.rglob("*")
+    if path.is_file() and path.suffix.lower() in {".fit", ".fits"}
+)
+
+print("Observation FITS files found:", len(science_files))
+print("First few:", science_files[:5])
+
+dark_by_exposure = {
+    30: dark30_bias_corrected,
+    20: dark20_bias_corrected,
+    10: dark10_bias_corrected,
+    5: dark5_bias_corrected
+}
+
+if "avg_bias" not in globals():
+    raise NameError("Run the bias section first so avg_bias is defined.")
+
+if "median_normalized_flat" not in globals():
+    raise NameError(
+        "Run the twilight-flat section first so median_normalized_flat is defined."
+    )
+
+for duration, dark_image in dark_by_exposure.items():
+    if dark_image.shape != avg_bias.shape:
+        raise ValueError(
+            f"The {duration}-second dark shape {dark_image.shape} "
+            f"does not match the bias shape {avg_bias.shape}."
+        )
+
+if median_normalized_flat.shape != avg_bias.shape:
+    raise ValueError(
+        f"The flat shape {median_normalized_flat.shape} "
+        f"does not match the bias shape {avg_bias.shape}."
+    )
+
+
+def get_exposure_seconds(header):
+    """Read exposure time from a common FITS header keyword."""
+    for keyword in ("EXPTIME", "EXPOSURE", "EXP_TIME"):
+        if keyword in header:
+            return float(header[keyword])
+
+    raise KeyError(
+        "No exposure-time keyword found in this FITS header. "
+        "Check the header and enter that image's exposure time manually."
+    )
+
+
+calibrated_images = {}
+
+for science_path in science_files:
+    if not science_path.exists():
+        raise FileNotFoundError(f"Science image not found: {science_path}")
+
+    science_raw = fits.getdata(science_path)
+    header = fits.getheader(science_path)
+
+    science = science_raw.astype(np.float32) / 16.0 + 1.0
+
+    science_exposure = get_exposure_seconds(header)
+    print(f"\n{science_path.name}: {science_exposure} seconds")
+
+    dark_exposure = min(
+        dark_by_exposure,
+        key=lambda duration: abs(duration - science_exposure)
+    )
+    dark_image = dark_by_exposure[dark_exposure]
+
+    scaled_dark = (science_exposure / dark_exposure) * dark_image
+
+    calibrated = (
+        science
+        - scaled_dark
+        - avg_bias
+    ) / median_normalized_flat
+
+    calibrated_images[science_path.stem] = calibrated
+
+    print("Selected dark:", dark_exposure, "seconds")
+    print("Calibrated image shape:", calibrated.shape)
+
+    plt.figure(figsize=(8, 8))
+    plt.imshow(
+        calibrated,
+        cmap="gray",
+        origin="lower",
+        vmin=np.percentile(calibrated, 1),
+        vmax=np.percentile(calibrated, 99),
+    )
+    plt.colorbar(label="ADU")
+    plt.title(f"Calibrated {science_path.stem}")
+    plt.xlabel("Pixel x")
+    plt.ylabel("Pixel y")
+    plt.show()
+
+    output_path = science_path.with_name(
+        f"{science_path.stem}_calibrated.npy"
+    )
+    np.save(output_path, calibrated)
+    print("Saved:", output_path)
+   
+#Lab 2: Analysis
+
+center_x = 3788.2
+center_y = 1133.6
+sky_x = 2210.3
+sky_y = 2036.9
+
+def pick_star_and_sky(image, title, zoom_half_size=40):
+    """Interactively choose a star center and a blank-sky center."""
+    finite = image[np.isfinite(image)]
+    vmin, vmax = np.percentile(finite, [5, 99.5])
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.imshow(image, origin="lower", cmap="gray", vmin=vmin, vmax=vmax)
+    ax.set_title(f"{title}: click the star")
+    ax.set_xlabel("x pixel (column)")
+    ax.set_ylabel("y pixel (row)")
+    rough_click = plt.ginput(1, timeout=0)
+    plt.close(fig)
+
+    if len(rough_click) != 1:
+        raise RuntimeError("No star location was selected.")
+
+    rough_x, rough_y = rough_click[0]
+    height, width = image.shape
+
+    x0 = max(0, int(round(rough_x)) - zoom_half_size)
+    x1 = min(width, int(round(rough_x)) + zoom_half_size + 1)
+    y0 = max(0, int(round(rough_y)) - zoom_half_size)
+    y1 = min(height, int(round(rough_y)) + zoom_half_size + 1)
+    zoom = image[y0:y1, x0:x1]
+    
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.imshow(
+        zoom,
+        origin="lower",
+        cmap="gray",
+        vmin=vmin,
+        vmax=vmax,
+        extent=(x0 - 0.5, x1 - 0.5, y0 - 0.5, y1 - 0.5),
+    )
+    ax.set_title(f"{title}: click the star center")
+    ax.set_xlabel("x pixel (column)")
+    ax.set_ylabel("y pixel (row)")
+    star_click = plt.ginput(1, timeout=0)
+    plt.close(fig)
+
+    if len(star_click) != 1:
+        raise RuntimeError("No star center was selected.")
+
+    center_x, center_y = star_click[0]
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.imshow(image, origin="lower", cmap="gray", vmin=vmin, vmax=vmax)
+    ax.set_title(
+        f"{title}: click a blank sky location, away from stars and edges"
+    )
+    ax.set_xlabel("x pixel (column)")
+    ax.set_ylabel("y pixel (row)")
+    sky_click = plt.ginput(1, timeout=0)
+    plt.close(fig)
+
+    if len(sky_click) != 1:
+        raise RuntimeError("No sky location was selected.")
+
+    sky_x, sky_y = sky_click[0]
+
+    print(f"Star center: x={center_x:.1f}, y={center_y:.1f}")
+    print(f"Sky center:  x={sky_x:.1f}, y={sky_y:.1f}")
+
+    return center_x, center_y, sky_x, sky_y
+
+image_stem = "HD343812_lab2-0005"
+image = calibrated_images[image_stem]
+
+center_x, center_y, sky_x, sky_y = pick_star_and_sky(
+    image,
+    title=image_stem,
+)
+
+def extract_square(data, center_x, center_y, half_window):
+    """Return a square image cutout centered on (center_x, center_y)."""
+    cx = int(round(center_x))
+    cy = int(round(center_y))
+    half_window = int(half_window)
+
+    x0, x1 = cx - half_window, cx + half_window + 1
+    y0, y1 = cy - half_window, cy + half_window + 1
+
+    if x0 < 0 or y0 < 0 or x1 > data.shape[1] or y1 > data.shape[0]:
+        raise ValueError(
+            "The requested cutout extends beyond the image edge. "
+            "Choose a different center or a smaller window."
+        )
+
+    return data[y0:y1, x0:x1]
+
+
+def gaussian_psf_weights(center_x, center_y, sigma_x, sigma_y,
+                         half_window):
+    """Create normalized 2D Gaussian PSF weights in a square window."""
+    if sigma_x <= 0 or sigma_y <= 0:
+        raise ValueError("Gaussian widths sigma_x and sigma_y must be positive.")
+
+    cx = int(round(center_x))
+    cy = int(round(center_y))
+    half_window = int(half_window)
+
+    x = np.arange(cx - half_window, cx + half_window + 1)
+    y = np.arange(cy - half_window, cy + half_window + 1)
+    xx, yy = np.meshgrid(x, y)
+
+    psf = np.exp(
+        -0.5 * (
+            ((xx - center_x) / sigma_x) ** 2
+            + ((yy - center_y) / sigma_y) ** 2
+        )
+    )
+
+    psf_sum = np.sum(psf)
+    if psf_sum <= 0:
+        raise ValueError("The Gaussian PSF has no positive weight.")
+
+    return psf / psf_sum
+
+
+def phot(data, center_x, center_y, sigma_x, sigma_y,
+         sky_x, sky_y, half_window):
+    """
+    Estimate a star's flux using Gaussian PSF weights and a blank sky cutout.
+
+    Returns the normalized PSF, weighted star cutout, net flux estimate,
+    median sky level per pixel, and effective number of noise pixels.
+    """
+    star_cutout = extract_square(data, center_x, center_y, half_window)
+    sky_cutout = extract_square(data, sky_x, sky_y, half_window)
+
+    # Estimate sky from the median of the blank cutout.
+    sky_per_pixel = float(np.median(sky_cutout))
+
+    psf = gaussian_psf_weights(
+        center_x, center_y, sigma_x, sigma_y, half_window
+    )
+
+
+    weighted_signal = psf * (star_cutout - sky_per_pixel)
+    psf_squared_sum = np.sum(psf**2)
+
+    if psf_squared_sum <= 0:
+        raise ValueError("The squared PSF weights sum to zero.")
+
+    net_flux = float(np.sum(weighted_signal) / psf_squared_sum)
+
+    n_effective = float(1.0 / psf_squared_sum)
+
+    return psf, weighted_signal, net_flux, sky_per_pixel, n_effective
+
+
+def calculate_snr_and_magnitude(net_flux, sky_per_pixel, n_effective,
+                                exposure_seconds, gain_e_per_adu,
+                                read_noise_adu):
+ 
+    if net_flux <= 0:
+        raise ValueError(
+            f"Net flux must be positive to calculate a magnitude; got {net_flux}."
+        )
+    if exposure_seconds <= 0:
+        raise ValueError("Exposure time must be positive.")
+    if gain_e_per_adu <= 0:
+        raise ValueError("Gain must be positive.")
+
+    source_electrons = net_flux * gain_e_per_adu
+    sky_electrons_per_pixel = max(sky_per_pixel, 0.0) * gain_e_per_adu
+    read_noise_electrons = read_noise_adu * gain_e_per_adu
+
+    variance_electrons = (
+        source_electrons
+        + n_effective * sky_electrons_per_pixel
+        + n_effective * read_noise_electrons**2
+    )
+
+    snr = source_electrons / np.sqrt(variance_electrons)
+    instrumental_mag = -2.5 * np.log10(net_flux / exposure_seconds)
+
+    magnitude_error = 1.0 / snr
+
+    return instrumental_mag, magnitude_error, snr
+
+photometry_setup = {
+    image_stem: {
+        "star_name": "HD343812",
+        "center_x": center_x,
+        "center_y": center_y,
+        "sky_x": sky_x,
+        "sky_y": sky_y,
+        # Add fitted sigma_x and sigma_y here.
+        "sigma_x": 5.47,
+        "sigma_y": 5.66,
+    }
+}
+
+photometry_setup = {
+    image_stem: {
+        "star_name": "Bunda",
+        "center_x": center_x,
+        "center_y": center_y,
+        "sky_x": sky_x,
+        "sky_y": sky_y,
+        # Add fitted sigma_x and sigma_y here.
+        "sigma_x": None,
+        "sigma_y": None,
+    }
+}
+photometry_setup = {
+    image_stem: {
+        "star_name": "28 Peg",
+        "center_x": center_x,
+        "center_y": center_y,
+        "sky_x": sky_x,
+        "sky_y": sky_y,
+        # Add fitted sigma_x and sigma_y here.
+        "sigma_x": 7.61,
+        "sigma_y": 8.95,
+    }
+}
+
+
+def validate_setup(setup):
+    """Check that required image measurements have been entered."""
+    required = (
+        "center_x", "center_y", "sigma_x", "sigma_y", "sky_x", "sky_y"
+    )
+    missing = [key for key in required if setup.get(key) is None]
+    if missing:
+        raise ValueError(
+            f"Fill in these photometry_setup values first: {missing}"
+        )
+
+
+fits_by_stem = {path.stem: path for path in science_files}
+
+missing_calibrations = set(fits_by_stem) - set(calibrated_images)
+if missing_calibrations:
+    raise KeyError(
+        "These FITS files do not have calibrated images yet: "
+        + ", ".join(sorted(missing_calibrations))
+    )
+
+
+def measure_one_image(image_stem, half_window):
+    """Run the Gaussian PSF measurement for one calibrated image."""
+    setup = photometry_setup[image_stem]
+    validate_setup(setup)
+
+    image = calibrated_images[image_stem]
+    fits_path = fits_by_stem[image_stem]
+    header = fits.getheader(fits_path)
+    exposure = get_exposure_seconds(header)
+
+    psf, weighted_signal, flux, sky, n_eff = phot(
+        image,
+        setup["center_x"],
+        setup["center_y"],
+        setup["sigma_x"],
+        setup["sigma_y"],
+        setup["sky_x"],
+        setup["sky_y"],
+        half_window,
+    )
+
+    magnitude, magnitude_error, snr = calculate_snr_and_magnitude(
+        flux,
+        sky,
+        n_eff,
+        exposure,
+        gain,
+        read_noise,
+    )
+
+    return {
+        "image_stem": image_stem,
+        "star_name": setup["star_name"],
+        "half_window": half_window,
+        "exposure_seconds": exposure,
+        "psf": psf,
+        "weighted_signal": weighted_signal,
+        "net_flux_adu": flux,
+        "sky_adu_per_pixel": sky,
+        "n_effective": n_eff,
+        "snr": snr,
+        "instrumental_mag": magnitude,
+        "mag_error": magnitude_error,
+    }
+
+
+growth_image_stem = "HD343812_lab2-0005"
+
+if growth_image_stem not in photometry_setup:
+    raise KeyError(f"Add {growth_image_stem!r} to photometry_setup first.")
+
+window_sizes = [3, 4, 5, 6, 8, 10, 12, 15]
+
+growth_results = [
+    measure_one_image(growth_image_stem, window)
+    for window in window_sizes
+]
+
+plt.figure(figsize=(7, 5))
+plt.plot(
+    [row["n_effective"] for row in growth_results],
+    [row["snr"] for row in growth_results],
+    marker="o",
+)
+plt.xlabel("Effective number of noise pixels")
+plt.ylabel("Signal-to-noise ratio")
+plt.title(f"Gaussian PSF growth curve: {growth_image_stem}")
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+
+
+chosen_window = None  # Replace with your chosen half-width in pixels
+
+if chosen_window is None:
+    raise ValueError("Choose chosen_window after reviewing the growth curve.")
+
+
+
+example = measure_one_image(growth_image_stem, chosen_window)
+setup = photometry_setup[growth_image_stem]
+
+star_cutout = extract_square(
+    calibrated_images[growth_image_stem],
+    setup["center_x"],
+    setup["center_y"],
+    chosen_window,
+)
+
+plt.figure(figsize=(7, 6))
+plt.imshow(star_cutout, origin="lower", cmap="gray")
+levels = example["psf"].max() * np.array([0.1, 0.25, 0.5, 0.75])
+plt.contour(example["psf"], levels=levels, colors="cyan")
+plt.colorbar(label="Calibrated ADU")
+plt.title(f"Gaussian PSF over star: {growth_image_stem}")
+plt.xlabel("Cutout x pixel")
+plt.ylabel("Cutout y pixel")
+plt.tight_layout()
+plt.show()
+
+
+photometry_results = {}
+
+for image_stem in photometry_setup:
+    if image_stem not in calibrated_images:
+        raise KeyError(
+            f"{image_stem!r} is not in calibrated_images. "
+            "Check the FITS stem and ensure that image was calibrated."
+        )
+
+    result = measure_one_image(image_stem, chosen_window)
+    photometry_results[image_stem] = result
+
+    print(
+        f"{result['star_name']} | {image_stem}: "
+        f"flux={result['net_flux_adu']:.2f} ADU, "
+        f"sky={result['sky_adu_per_pixel']:.3f} ADU/pixel, "
+        f"SNR={result['snr']:.2f}, "
+        f"m_inst={result['instrumental_mag']:.4f} "
+        f"+/- {result['mag_error']:.4f}"
+    )
+
+def measure_snr_and_magnitude(net_flux, sky_per_pixel, n_pixels,
+                              exposure, gain, read_noise):
+    """Calculate aperture SNR and instrumental magnitude."""
+    if net_flux <= 0:
+        raise ValueError("Net flux must be positive to calculate a magnitude.")
+
+    variance = (
+        gain * net_flux
+        + n_pixels * gain * sky_per_pixel
+        + n_pixels * read_noise**2
+    )
+    snr = net_flux / np.sqrt(variance)
+    instrumental_mag = -2.5 * np.log10(net_flux / exposure)
+    magnitude_error = 1.0 / snr  # Approximation specified in the lab handout
+
+    return instrumental_mag, magnitude_error, snr
+
+landolt_results = [
+    {
+        "name": "SA 111-1496",
+        "path": Path(r"C:\ASTR362_Files\SA1111416_lab2\SA1111496_lab2-0005.fit"),
+        "known_mag": 7.216,
+        "known_mag_error": 0.001,
+        "airmass": 1.57,          
+        "instrumental_mag": ..., 
+        "mag_error": ...,        
+    },
+    {
+        "name": "HD 199280",
+        "path": Path(r"C:\ASTR362_Files\HD199280_lab2\HD199280_lab2-0005.fit"),
+        "known_mag": 6.56,
+        "known_mag_error": 0.001,  
+        "airmass": ...,
+        "instrumental_mag": ...,
+        "mag_error": ...,
+    },
+]
+
+for row in landolt_results:
+    row["C"] = row["known_mag"] - row["instrumental_mag"]
+    row["C_error"] = np.sqrt(
+        row["known_mag_error"]**2 + row["mag_error"]**2
+    )
